@@ -62,6 +62,11 @@ def test_classify_actual_pyroh2_swissparam_failure() -> None:
     assert classify_status(PYROH2_SWISSPARAM_FAILURE) == "failed"
 
 
+def test_terminal_failure_takes_precedence_over_running_text() -> None:
+    text = "Calculation currently running.\nERROR PyrOH2.mol2 COULD NOT BE DONE (8)"
+    assert classify_status(text) == "failed"
+
+
 class FakeResponse:
     def __init__(self, status_code: int, text: str = "") -> None:
         self.status_code, self.text = status_code, text
