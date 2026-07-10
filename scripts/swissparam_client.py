@@ -21,6 +21,7 @@ FAILURE_MARKERS = (
     "error_pka",
     "error occurred while processing mol2 file",
 )
+FAILURE_SUMMARY_MARKERS = ("error", "failed", "could not", "fatal")
 
 
 class SwissParamError(RuntimeError):
@@ -59,6 +60,23 @@ def classify_status(text: str) -> str:
     if "in the queue" in lowered or "pending" in lowered:
         return "queued"
     return "unknown"
+
+
+def summarize_failure(text: str, *, max_lines: int = 4) -> str:
+    selected: list[str] = []
+    seen: set[str] = set()
+    for raw_line in text.splitlines():
+        line = " ".join(raw_line.split())
+        lowered = line.lower()
+        if not line or not any(marker in lowered for marker in FAILURE_SUMMARY_MARKERS):
+            continue
+        if line in seen:
+            continue
+        selected.append(line)
+        seen.add(line)
+        if len(selected) >= max_lines:
+            break
+    return " | ".join(selected) if selected else "SwissParam returned an unclassified terminal failure"
 
 
 def safe_extract_tar(archive_path: str | Path, destination: str | Path) -> list[Path]:
