@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "charmm-parameterization-pipeline"
+version = "0.1.0"
+description = "Reproducible SwissParam-based starting parameter generation and technical QC"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "requests>=2.32,<3",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8,<9",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+  "integration: tests that contact external parameterization services",
+]

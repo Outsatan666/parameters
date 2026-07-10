@@ -1,5 +1,182 @@
-# CHARMM parameterization pipeline
+# CHARMM starting-parameter pipeline
 
-Repository initialized for a reproducible small-molecule CHARMM parameterization workflow.
+Reproducible Tier-1 generation of **starting CHARMM-compatible parameter sets** from MOL2 inputs using the official SwissParam command-line endpoints, followed by technical QC, MATCH-vs-MMFF comparison, manifest/resume logic, and per-molecule ZIP packaging.
 
-Development is performed on feature branches. Input molecular structures from private storage are **not published to this public repository automatically**.
+> These are starting CHARMM-compatible parameter sets; scientific validation remains separate.
+
+## Scientific boundary
+
+Pipeline statuses are operational/technical only:
+
+- `GENERATED`
+- `TECHNICAL_PASS`
+- `REVIEW`
+- `FAILED`
+- `SECOND_LEVEL_RUNNING`
+- `SECOND_LEVEL_COMPLETE`
+
+`TECHNICAL_PASS` does **not** mean production-ready or scientifically validated.
+
+## Repository layout
+
+```text
+input/
+config/states.tsv
+scripts/
+results/{raw,match,mmff,review}/
+packages/
+reports/
+manifests/
+tests/
+.github/workflows/parameterize.yml
+```
+
+MOL2 files are ignored by Git by default. This public repository does not automatically publish structures fetched from private Google Drive storage.
+
+## Tier 1: SwissParam
+
+The client implements the official command-line flow:
+
+1. health check;
+2. submit one MOL2 with `approach=both`;
+3. parse and persist Session number;
+4. bounded status polling;
+5. resume an unfinished session from the manifest;
+6. retrieve `results.tar.gz`;
+7. SHA256 and safe tar extraction;
+8. output inventory before branch classification;
+9. technical QC;
+10. independent MATCH vs MMFF comparison;
+11. per-molecule ZIP package.
+
+MATCH is the primary CHARMM branch. MMFF-based output is retained as an independent comparator. The pipeline never averages or automatically mixes the branches.
+
+## Local setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[test]"
+pytest -m "not integration"
+```
+
+On Windows PowerShell:
+
+```powershell
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -e ".[test]"
+pytest -m "not integration"
+```
+
+## Environment inventory
+
+Run on the actual workstation/WSL/server:
+
+```bash
+python -m scripts.inventory_environment \
+  --scope-note "user workstation / WSL"
+```
+
+This probes existing Git, Conda/Mamba, Python, VMD, GROMACS and ORCA. It does not reinstall them or modify system Python.
+
+## Input contract
+
+Place MOL2 files in `input/`.
+
+Minimum required sections:
+
+```text
+@<TRIPOS>MOLECULE
+@<TRIPOS>ATOM
+@<TRIPOS>BOND
+```
+
+The declared atom and bond counts must match the parsed blocks.
+
+Optional `config/states.tsv`:
+
+```text
+molecule	state	expected_charge	headgroup_note
+ALC0315_neutral	neutral	0	tertiary amine neutral
+ALC0315_protonated	protonated	1	protonated tertiary amine
+```
+
+If `states.tsv` has no row for an input, the batch continues with `EXPECTED_CHARGE_UNKNOWN`. Protonation, H atoms, bond orders, and input atom names are never silently edited.
+
+## Single explicit integration test
+
+External SwissParam calls are never part of ordinary unit tests.
+
+```bash
+export RUN_SWISSPARAM_INTEGRATION=1
+export SWISSPARAM_TEST_MOL2=/absolute/path/to/molecule.mol2
+pytest -m integration -k swissparam_single_molecule_submission -s
+```
+
+## Batch
+
+Only after the single-molecule integration test:
+
+```bash
+python -m scripts.batch_parameterize \
+  --input-dir input \
+  --states config/states.tsv
+```
+
+Default polling interval is 15 s. Total wait is bounded and configurable:
+
+```bash
+python -m scripts.batch_parameterize \
+  --poll-interval 15 \
+  --max-total-wait 7200
+```
+
+Idempotency key:
+
+```text
+input SHA256
++ generator
++ approach
++ pipeline version
+```
+
+Completed unchanged inputs are skipped. An unfinished manifest entry with a Session number resumes polling instead of submitting a duplicate job.
+
+## Technical QC
+
+The QC layer checks:
+
+- required MOL2 sections;
+- declared vs parsed atom/bond counts;
+- duplicate atom names;
+- charge readability;
+- output inventory;
+- MATCH branch presence;
+- input/MATCH/MMFF atom counts when output MOL2 is available;
+- expected integer charge when configured, tolerance `1e-4`;
+- log issue tokens with context.
+
+Duplicate input atom names are preserved in the original MOL2. When they prevent reliable name mapping, the molecule is routed to `REVIEW`.
+
+## Package format
+
+```text
+packages/<MOLECULE>_CHARMM_STARTING_PARAMETERS.zip
+```
+
+Each package contains the immutable original MOL2, raw SwissParam archive, detected MATCH/MMFF files, comparison report, technical QC, issues table, and molecule-level manifest entry.
+
+## GitHub Actions
+
+The workflow is manual `workflow_dispatch` only. It has optional `input_path` and `force_rerun` inputs and uploads packages, reports, manifest, and raw SwissParam archives as a GitHub artifact.
+
+There is no schedule and no automatic GitHub Release publication.
+
+## Tier 2
+
+Tier 2 is only for `REVIEW` molecules.
+
+The project specification prefers `FFParam-v2`, but the authoritative `FFParam-v2` CLI has not yet been identified unambiguously. `scripts/second_level.py` therefore performs discovery and captures actual `--help` output when a candidate executable exists. It does not invent CLI flags.
+
+GAAMP remains a documented fallback and is not legacy-patched blindly.
