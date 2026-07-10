@@ -167,6 +167,10 @@ def parse_mol2_text(text: str) -> Mol2Data:
     atom_ids = [atom.atom_id for atom in atoms]
     if len(atom_ids) != len(set(atom_ids)):
         raise Mol2ParseError("Duplicate atom IDs detected")
+    atom_id_set = set(atom_ids)
+    invalid_bond = next((bond for bond in bonds if bond.origin_atom_id not in atom_id_set or bond.target_atom_id not in atom_id_set), None)
+    if invalid_bond is not None:
+        raise Mol2ParseError(f"Bond {invalid_bond.bond_id} references unknown atom ID {invalid_bond.origin_atom_id} or {invalid_bond.target_atom_id}")
     return Mol2Data(name, declared_atom_count, declared_bond_count, tuple(atoms), tuple(bonds), charge_type)
 
 
