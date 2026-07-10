@@ -1,0 +1,62 @@
+name: Parameterize molecules
+
+on:
+  workflow_dispatch:
+    inputs:
+      input_path:
+        description: "Directory containing MOL2 files"
+        required: false
+        default: "input"
+        type: string
+      force_rerun:
+        description: "Force a new SwissParam submission even when manifest says complete"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  tier1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install pipeline
+        run: python -m pip install -e ".[test]"
+
+      - name: Unit tests
+        run: pytest -m "not integration"
+
+      - name: Validate and parameterize
+        shell: bash
+        run: |
+          set -euo pipefail
+          FORCE_FLAG=""
+          if [[ "${{ inputs.force_rerun }}" == "true" ]]; then
+            FORCE_FLAG="--force"
+          fi
+          python -m scripts.batch_parameterize \
+            --input-dir "${{ inputs.input_path }}" \
+            ${FORCE_FLAG}
+
+      - name: Upload parameterization artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: charmm-starting-parameters-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            packages/*.zip
+            reports/*
+            manifests/manifest.json
+            results/raw/**/results.tar.gz
