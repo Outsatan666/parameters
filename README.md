@@ -17,6 +17,10 @@ Pipeline statuses are operational/technical only:
 
 `TECHNICAL_PASS` does **not** mean production-ready or scientifically validated.
 
+The batch also enforces an applicability boundary before SwissParam submission. A MOL2 graph containing a six-coordinate phosphorus atom bonded to exactly four nitrogen and two oxygen atoms (`P-N4-O2`) is routed to `REVIEW` with `PV_PORPHYRIN_CUSTOM_FF_REQUIRED`. This structural signature is an operational detector for the project's specialized P(V)-porphyrin route; it is not, by itself, a general oxidation-state assignment. No SwissParam health, submit, or polling request is made for that route.
+
+The recommended specialized route is a custom CHARMM-compatible P(V)-porphyrin core plus CGenFF phenyl/pyridyl periphery with separate QM/MM validation. Expected molecular charge remains an explicit input-state contract in `config/states.tsv`; the graph detector does not infer charge.
+
 ## Repository layout
 
 ```text
@@ -35,19 +39,22 @@ MOL2 files are ignored by Git by default. This public repository does not automa
 
 ## Tier 1: SwissParam
 
-The client implements the official command-line flow:
+For inputs inside the SwissParam applicability boundary, the client implements the official command-line flow:
 
-1. health check;
-2. submit one MOL2 with `approach=both`;
-3. parse and persist Session number;
-4. bounded status polling;
-5. resume an unfinished session from the manifest;
-6. retrieve `results.tar.gz`;
-7. SHA256 and safe tar extraction;
-8. output inventory before branch classification;
-9. technical QC;
-10. independent MATCH vs MMFF comparison;
-11. per-molecule ZIP package.
+1. graph applicability preflight;
+2. health check;
+3. submit one MOL2 with `approach=both`;
+4. parse and persist Session number;
+5. bounded status polling;
+6. resume an unfinished session from the manifest;
+7. retrieve `results.tar.gz`;
+8. SHA256 and safe tar extraction;
+9. output inventory before branch classification;
+10. technical QC;
+11. independent MATCH vs MMFF comparison;
+12. per-molecule ZIP package.
+
+Terminal SwissParam status payloads are classified before the wait budget expires when they contain known backend failure markers. The manifest preserves a concise summary of the actual backend error lines rather than replacing them with a timeout or generic failure phrase.
 
 MATCH is the primary CHARMM branch. MMFF-based output is retained as an independent comparator. The pipeline never averages or automatically mixes the branches.
 
@@ -103,6 +110,8 @@ ALC0315_protonated	protonated	1	protonated tertiary amine
 ```
 
 If `states.tsv` has no row for an input, the batch continues with `EXPECTED_CHARGE_UNKNOWN`. Protonation, H atoms, bond orders, and input atom names are never silently edited.
+
+For a specialized `P-N4-O2` route, a configured expected charge is compared with the MOL2 charge sum during preflight. A mismatch is recorded as `INPUT_CHARGE_MISMATCH`; the input is preserved unchanged and remains in `REVIEW`.
 
 ## Single explicit integration test
 

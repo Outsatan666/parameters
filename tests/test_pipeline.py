@@ -8,11 +8,12 @@ from zipfile import ZipFile
 import pytest
 import requests
 
+from scripts.batch_parameterize import process_one
 from scripts.build_archives import build_package
 from scripts.inspect_package import branch_inventory, run_qc
 from scripts.manifest import ManifestStore, make_job_key
-from scripts.mol2 import Mol2ParseError, parse_mol2_text
-from scripts.swissparam_client import SwissParamClient, SwissParamHTTPError, SwissParamProtocolError, classify_status, parse_session_number, safe_extract_tar
+from scripts.mol2 import Mol2ParseError, detect_pv_porphyrin_core, parse_mol2_text
+from scripts.swissparam_client import SwissParamClient, SwissParamHTTPError, SwissParamProtocolError, classify_status, parse_session_number, safe_extract_tar, summarize_failure
 
 VALID_MOL2 = """@<TRIPOS>MOLECULE
 TEST
@@ -27,6 +28,29 @@ USER_CHARGES
 @<TRIPOS>BOND
 1 1 2 1
 2 2 3 1
+"""
+
+PV_PORPHYRIN_MOL2 = """@<TRIPOS>MOLECULE
+PV_CORE
+ 7 6 0 0 0
+SMALL
+USER_CHARGES
+
+@<TRIPOS>ATOM
+1 P 0.0 0.0 0.0 P.3 1 MOL 0.20
+2 N1 1.0 0.0 0.0 N.2 1 MOL -0.05
+3 N2 -1.0 0.0 0.0 N.2 1 MOL -0.05
+4 N3 0.0 1.0 0.0 N.ar 1 MOL -0.05
+5 N4 0.0 -1.0 0.0 N.ar 1 MOL -0.05
+6 O1 0.0 0.0 1.0 O.3 1 MOL 0.00
+7 O2 0.0 0.0 -1.0 O.3 1 MOL 0.00
+@<TRIPOS>BOND
+1 1 2 1
+2 1 3 1
+3 1 4 1
+4 1 5 1
+5 1 6 1
+6 1 7 1
 """
 
 PYROH2_SWISSPARAM_FAILURE = """
@@ -54,6 +78,23 @@ def test_reject_malformed_mol2_without_atom_block() -> None:
         parse_mol2_text(VALID_MOL2.replace("@<TRIPOS>ATOM", "@<TRIPOS>ALT_ATOM"))
 
 
+def test_reject_bond_that_references_unknown_atom_id() -> None:
+    with pytest.raises(Mol2ParseError, match="references unknown atom ID"):
+        parse_mol2_text(VALID_MOL2.replace("2 2 3 1", "2 2 99 1"))
+
+
+def test_detect_pv_porphyrin_core_by_p_n4_o2_coordination() -> None:
+    core = detect_pv_porphyrin_core(parse_mol2_text(PV_PORPHYRIN_MOL2))
+    assert core is not None
+    assert core.phosphorus_atom_id == 1
+    assert core.nitrogen_atom_ids == (2, 3, 4, 5)
+    assert core.oxygen_atom_ids == (6, 7)
+
+
+def test_ordinary_mol2_does_not_trigger_pv_porphyrin_route() -> None:
+    assert detect_pv_porphyrin_core(parse_mol2_text(VALID_MOL2)) is None
+
+
 def test_parse_swissparam_session_number() -> None:
     assert parse_session_number("Session number: 65720367") == "65720367"
 
@@ -65,6 +106,13 @@ def test_classify_actual_pyroh2_swissparam_failure() -> None:
 def test_terminal_failure_takes_precedence_over_running_text() -> None:
     text = "Calculation currently running.\nERROR PyrOH2.mol2 COULD NOT BE DONE (8)"
     assert classify_status(text) == "failed"
+
+
+def test_summarize_actual_pyroh2_failure_preserves_backend_reason() -> None:
+    summary = summarize_failure(PYROH2_SWISSPARAM_FAILURE)
+    assert "Problem in CHARMM run" in summary
+    assert "COULD NOT BE DONE (8)" in summary
+    assert "exceeded max wait" not in summary
 
 
 class FakeResponse:
@@ -91,6 +139,15 @@ class StaticTextSession:
         return FakeResponse(200, self.text)
 
 
+class RejectingSwissParamClient:
+    def check_health(self) -> str:
+        raise AssertionError("specialized P(V)-porphyrin route must not call SwissParam health")
+    def submit(self, *args: object, **kwargs: object) -> str:
+        raise AssertionError("specialized P(V)-porphyrin route must not submit to SwissParam")
+    def poll(self, *args: object, **kwargs: object) -> object:
+        raise AssertionError("specialized P(V)-porphyrin route must not poll SwissParam")
+
+
 def test_detect_failed_http_response_after_bounded_retries() -> None:
     fake = FakeSession([500, 500, 500])
     client = SwissParamClient(session=fake, max_retries=2, sleeper=lambda _: None)  # type: ignore[arg-type]
@@ -107,6 +164,36 @@ def test_poll_stops_on_actual_pyroh2_failure_without_sleeping() -> None:
     assert result.state == "failed"
     assert fake.calls == 1
     assert sleeps == []
+
+
+def test_pv_porphyrin_routes_to_custom_ff_before_swissparam(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    mol2 = input_dir / "PyrOH2.mol2"
+    mol2.write_text(PV_PORPHYRIN_MOL2)
+    manifest = ManifestStore.load(tmp_path / "manifests/manifest.json")
+
+    result = process_one(
+        mol2,
+        client=RejectingSwissParamClient(),  # type: ignore[arg-type]
+        manifest=manifest,
+        state_row={"expected_charge": "1"},
+        approach="both",
+        poll_interval_s=15,
+        max_total_wait_s=7200,
+        force=False,
+        workspace=tmp_path,
+    )
+
+    assert result["status"] == "REVIEW"
+    assert result["state"] == "SPECIALIZED_PARAMETERIZATION_REQUIRED"
+    assert result["action"] == "ROUTE_SPECIALIZED_PARAMETERIZATION"
+    assert result["review_reason"] == "PV_PORPHYRIN_CUSTOM_FF_REQUIRED"
+    assert result["specialized_route"]["phosphorus_atom_id"] == 1
+    assert result["specialized_route"]["neighbor_element_counts"] == {"N": 4, "O": 2}
+    issue_codes = {issue["code"] for issue in result["issues"]}
+    assert "PV_PORPHYRIN_CUSTOM_FF_REQUIRED" in issue_codes
+    assert "INPUT_CHARGE_MISMATCH" in issue_codes
 
 
 def test_manifest_round_trip_and_complete_skip(tmp_path: Path) -> None:

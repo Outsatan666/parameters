@@ -31,6 +31,13 @@ class Mol2Bond:
 
 
 @dataclass(frozen=True)
+class PvPorphyrinCore:
+    phosphorus_atom_id: int
+    nitrogen_atom_ids: tuple[int, ...]
+    oxygen_atom_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class Mol2Data:
     name: str
     declared_atom_count: int
@@ -79,6 +86,30 @@ def _section_bounds(lines: list[str], section: str) -> tuple[int, int]:
             end = index
             break
     return start, end
+
+
+def _atom_element(atom: Mol2Atom) -> str:
+    return atom.atom_type.split(".", 1)[0].upper()
+
+
+def detect_pv_porphyrin_core(data: Mol2Data) -> PvPorphyrinCore | None:
+    atoms_by_id = {atom.atom_id: atom for atom in data.atoms}
+    neighbors: dict[int, set[int]] = {atom.atom_id: set() for atom in data.atoms}
+    for bond in data.bonds:
+        neighbors[bond.origin_atom_id].add(bond.target_atom_id)
+        neighbors[bond.target_atom_id].add(bond.origin_atom_id)
+
+    for atom in data.atoms:
+        if _atom_element(atom) != "P":
+            continue
+        neighbor_ids = neighbors[atom.atom_id]
+        if len(neighbor_ids) != 6:
+            continue
+        nitrogen_ids = tuple(sorted(atom_id for atom_id in neighbor_ids if _atom_element(atoms_by_id[atom_id]) == "N"))
+        oxygen_ids = tuple(sorted(atom_id for atom_id in neighbor_ids if _atom_element(atoms_by_id[atom_id]) == "O"))
+        if len(nitrogen_ids) == 4 and len(oxygen_ids) == 2:
+            return PvPorphyrinCore(atom.atom_id, nitrogen_ids, oxygen_ids)
+    return None
 
 
 def parse_mol2_text(text: str) -> Mol2Data:
@@ -136,6 +167,10 @@ def parse_mol2_text(text: str) -> Mol2Data:
     atom_ids = [atom.atom_id for atom in atoms]
     if len(atom_ids) != len(set(atom_ids)):
         raise Mol2ParseError("Duplicate atom IDs detected")
+    atom_id_set = set(atom_ids)
+    invalid_bond = next((bond for bond in bonds if bond.origin_atom_id not in atom_id_set or bond.target_atom_id not in atom_id_set), None)
+    if invalid_bond is not None:
+        raise Mol2ParseError(f"Bond {invalid_bond.bond_id} references unknown atom ID {invalid_bond.origin_atom_id} or {invalid_bond.target_atom_id}")
     return Mol2Data(name, declared_atom_count, declared_bond_count, tuple(atoms), tuple(bonds), charge_type)
 
 
