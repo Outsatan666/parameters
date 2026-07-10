@@ -12,6 +12,15 @@ import requests
 
 DEFAULT_BASE_URL = "https://www.swissparam.ch:8443"
 SESSION_RE = re.compile(r"Session\s+number\s*:\s*(\d+)", re.IGNORECASE)
+FAILURE_MARKERS = (
+    "calculation failed",
+    "has failed",
+    "fatal error",
+    "could not be done",
+    "error. problem in charmm run",
+    "error_pka",
+    "error occurred while processing mol2 file",
+)
 
 
 class SwissParamError(RuntimeError):
@@ -43,12 +52,12 @@ def classify_status(text: str) -> str:
     lowered = text.lower()
     if "calculation is finished" in lowered:
         return "finished"
+    if any(token in lowered for token in FAILURE_MARKERS):
+        return "failed"
     if "currently running" in lowered:
         return "running"
     if "in the queue" in lowered or "pending" in lowered:
         return "queued"
-    if any(token in lowered for token in ("calculation failed", "has failed", "fatal error")):
-        return "failed"
     return "unknown"
 
 
