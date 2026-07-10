@@ -6,8 +6,10 @@ import shutil
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from scripts.inspect_package import classify_branch
 
-def build_package(molecule: str, *, original_mol2: str | Path, raw_archive: str | Path, extracted_root: str | Path, comparison_tsv: str | Path, comparison_md: str | Path, qc_json: str | Path, issues_tsv: str | Path, manifest_entry: dict, packages_dir: str | Path = "packages", staging_root: str | Path = ".package_staging") -> Path:
+
+def build_package(molecule: str, *, original_mol2: str | Path, raw_archive: str | Path, extracted_root: str | Path, comparison_tsv: str | Path, comparison_md: str | Path, qc_json: str | Path, issues_tsv: str | Path, manifest_entry: dict, derived_dir: str | Path | None = None, packages_dir: str | Path = "packages", staging_root: str | Path = ".package_staging") -> Path:
     staging_base = Path(staging_root)
     molecule_root = staging_base / molecule
     if molecule_root.exists():
@@ -21,12 +23,21 @@ def build_package(molecule: str, *, original_mol2: str | Path, raw_archive: str 
     shutil.copy2(qc_json, molecule_root / "qc/qc.json")
     shutil.copy2(issues_tsv, molecule_root / "qc/issues.tsv")
     (molecule_root / "manifest.json").write_text(json.dumps(manifest_entry, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if derived_dir is not None:
+        derived_source = Path(derived_dir)
+        if derived_source.is_dir():
+            derived_target = molecule_root / "derived"
+            derived_target.mkdir(parents=True, exist_ok=True)
+            for path in sorted(derived_source.rglob("*")):
+                if path.is_file():
+                    destination = derived_target / path.relative_to(derived_source)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, destination)
     extracted = Path(extracted_root)
     for path in extracted.rglob("*"):
         if not path.is_file():
             continue
-        normalized = str(path.relative_to(extracted)).replace("\\", "/").lower()
-        branch = "MATCH" if "match" in normalized else "MMFF" if "mmff" in normalized else None
+        branch = classify_branch(path.relative_to(extracted))
         if branch:
             target = molecule_root / "swissparam" / branch / path.name
             if target.exists():

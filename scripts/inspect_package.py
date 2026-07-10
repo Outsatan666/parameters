@@ -9,6 +9,7 @@ from scripts.mol2 import Mol2ParseError, parse_mol2, sha256_file
 
 ISSUE_TOKENS = ("warning", "error", "failed", "missing", "unknown", "unsupported")
 CHARGE_TOLERANCE = 1e-4
+PARAMETER_SUFFIXES = (".str", ".par", ".prm", ".rtf")
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,8 @@ def run_qc(input_mol2: str | Path, extracted_root: str | Path, *, expected_charg
     branches = branch_inventory(root)
     if not branches["MATCH"]:
         issues.append(Issue("MATCH_MISSING", "CRITICAL", "MATCH branch was not identified"))
+    elif not any(Path(name).suffix.lower() in PARAMETER_SUFFIXES for name in branches["MATCH"]):
+        issues.append(Issue("MATCH_PARAMETERS_MISSING", "CRITICAL", "MATCH branch has no CHARMM parameter files (.str/.par/.prm/.rtf); found only: " + ", ".join(branches["MATCH"])))
 
     charge_checks: dict[str, dict] = {}
     atom_counts: dict[str, int | None] = {"INPUT": len(input_data.atoms)}

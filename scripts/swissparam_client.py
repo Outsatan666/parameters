@@ -102,8 +102,8 @@ class SwissParamClient:
         if approach not in {"both", "mmff-based", "match"}:
             raise ValueError(f"Unsupported SwissParam approach: {approach}")
         path = Path(mol2_path)
-        with path.open("rb") as handle:
-            response = self._request("POST", f"{self.base_url}/startparam", params={"approach": approach}, files={"myMol2": (path.name, handle, "chemical/x-mol2")})
+        payload = path.read_bytes()
+        response = self._request("POST", f"{self.base_url}/startparam", params={"approach": approach}, files={"myMol2": (path.name, payload, "chemical/x-mol2")})
         if raw_response_path is not None:
             raw = Path(raw_response_path)
             raw.parent.mkdir(parents=True, exist_ok=True)

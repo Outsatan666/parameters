@@ -88,11 +88,17 @@ def parse_mol2_text(text: str) -> Mol2Data:
     if missing:
         raise Mol2ParseError(f"Missing required MOL2 sections: {', '.join(missing)}")
     molecule_start, molecule_end = _section_bounds(lines, "@<TRIPOS>MOLECULE")
-    molecule_block = [line.strip() for line in lines[molecule_start:molecule_end]]
-    if len(molecule_block) < 2:
-        raise Mol2ParseError("MOLECULE block does not contain name and counts")
-    name = molecule_block[0]
-    count_fields = molecule_block[1].split()
+    raw_block = [line.strip() for line in lines[molecule_start:molecule_end]]
+    if not raw_block:
+        raise Mol2ParseError("MOLECULE block is empty")
+    # The molecule name is the first line (it may legally be empty). Remaining metadata lines
+    # (counts, mol_type, charge_type, ...) are taken skipping blanks, so a stray blank line does
+    # not shift charge_type — while an empty name line is still preserved as an empty name.
+    name = raw_block[0]
+    metadata = [line for line in raw_block[1:] if line]
+    if not metadata:
+        raise Mol2ParseError("MOLECULE block does not contain a counts line")
+    count_fields = metadata[0].split()
     if len(count_fields) < 2:
         raise Mol2ParseError("MOLECULE counts line is malformed")
     try:
@@ -100,7 +106,7 @@ def parse_mol2_text(text: str) -> Mol2Data:
         declared_bond_count = int(count_fields[1])
     except ValueError as exc:
         raise Mol2ParseError("MOLECULE atom/bond counts are not integers") from exc
-    charge_type = molecule_block[3] if len(molecule_block) >= 4 and molecule_block[3] else None
+    charge_type = metadata[2] if len(metadata) >= 3 and metadata[2] else None
     atom_start, atom_end = _section_bounds(lines, "@<TRIPOS>ATOM")
     atoms: list[Mol2Atom] = []
     for line_number, line in enumerate(lines[atom_start:atom_end], start=atom_start + 1):

@@ -37,17 +37,48 @@ jobs:
       - name: Unit tests
         run: pytest -m "not integration"
 
-      - name: Validate and parameterize
+      - name: Fetch MOL2 inputs (optional)
         shell: bash
+        env:
+          RCLONE_CONFIG_B64: ${{ secrets.RCLONE_CONFIG_B64 }}
+          INPUT_REMOTE: ${{ vars.INPUT_REMOTE }}
         run: |
           set -euo pipefail
+          mkdir -p "${{ inputs.input_path }}"
+          if [[ -n "${RCLONE_CONFIG_B64:-}" && -n "${INPUT_REMOTE:-}" ]]; then
+            if ! command -v rclone >/dev/null 2>&1; then
+              echo "rclone not available on runner; skipping fetch"; exit 0
+            fi
+            mkdir -p "$HOME/.config/rclone"
+            echo "$RCLONE_CONFIG_B64" | base64 -d > "$HOME/.config/rclone/rclone.conf"
+            rclone copy "$INPUT_REMOTE" "${{ inputs.input_path }}" --include '*.mol2' || echo "Fetch failed; continuing with existing inputs"
+          else
+            echo "No input remote configured (secrets.RCLONE_CONFIG_B64 / vars.INPUT_REMOTE); skipping fetch"
+          fi
+
+      - name: Validate and parameterize
+        shell: bash
+        env:
+          PUBLISH_DESTINATION: ${{ vars.PUBLISH_DESTINATION }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mol2s=("${{ inputs.input_path }}"/*.mol2)
+          if (( ${#mol2s[@]} == 0 )); then
+            echo "No MOL2 inputs present in '${{ inputs.input_path }}'; nothing to parameterize (not a failure)."
+            exit 0
+          fi
           FORCE_FLAG=""
           if [[ "${{ inputs.force_rerun }}" == "true" ]]; then
             FORCE_FLAG="--force"
           fi
+          PUBLISH_FLAG=""
+          if [[ -n "${PUBLISH_DESTINATION:-}" ]]; then
+            PUBLISH_FLAG="--publish ${PUBLISH_DESTINATION}"
+          fi
           python -m scripts.batch_parameterize \
             --input-dir "${{ inputs.input_path }}" \
-            ${FORCE_FLAG}
+            ${FORCE_FLAG} ${PUBLISH_FLAG}
 
       - name: Upload parameterization artifacts
         if: always()

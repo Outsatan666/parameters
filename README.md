@@ -180,3 +180,48 @@ Tier 2 is only for `REVIEW` molecules.
 The project specification prefers `FFParam-v2`, but the authoritative `FFParam-v2` CLI has not yet been identified unambiguously. `scripts/second_level.py` therefore performs discovery and captures actual `--help` output when a candidate executable exists. It does not invent CLI flags.
 
 GAAMP remains a documented fallback and is not legacy-patched blindly.
+
+## Derived structure and QM inputs
+
+For each processed molecule the batch also emits, into the package under `derived/`, files whose
+atom numbering matches the input MOL2 exactly (serial = MOL2 `atom_id`, names preserved), so VMD
+FFtk reads them consistently:
+
+- `<name>.pdb` — coordinates + atom names (single source of atom order for all downstream files);
+- `<name>_orca.inp` — ORCA input (default keyword line `! R2SCAN-3c OPT freq`);
+- `<name>.xyz` — standard XYZ for CREST/xtb.
+
+Standalone generation:
+
+```bash
+python -m scripts.derived_artifacts input/LIG.mol2 --out-dir derived \
+  --orca-keywords "! R2SCAN-3c OPT freq" --charge 0 --multiplicity 1 --solvent Water
+```
+
+The method/basis/task line, charge, multiplicity and solvation are supplied per request (no
+silent defaults for method or solvent); `--solvent Water` appends `CPCM(Water)` for ORCA and
+`--alpb water` for CREST. Element symbols are derived from SYBYL atom types (`C.3`->`C`, `Cl`),
+with a fallback to the atom name.
+
+### PSF via psfgen
+
+`scripts/structure_files.py` builds the PDB and, when a CHARMM topology (`.rtf`/`.str`) is
+available **and** psfgen/VMD is on `PATH`, drives psfgen to write the PSF (the canonical FFtk
+route). psfgen is never faked: without VMD the PDB and QM inputs are still produced and the PSF
+is skipped. Probe availability with `structure_files.psfgen_available()`.
+
+## Publishing results
+
+Packages can be published to a destination folder or an rclone remote (e.g. a Google Drive
+mount, an Insync/rclone staging directory, or a configured `gdrive:` remote). Credentials are
+never handled by this code — they live in your OS mount or your own rclone config.
+
+```bash
+python -m scripts.batch_parameterize --input-dir input --publish "local:/path/to/Drive/CHARMM"
+python -m scripts.batch_parameterize --input-dir input --publish "rclone:gdrive:CHARMM"
+```
+
+Published layout: `<destination>/outputs/<MOLECULE>/<package>.zip`. In CI, set the repository
+variable `PUBLISH_DESTINATION` and (optionally) `INPUT_REMOTE` + secret `RCLONE_CONFIG_B64` to
+fetch inputs before the run. When no inputs are present the workflow skips cleanly instead of
+failing.

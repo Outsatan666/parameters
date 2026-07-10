@@ -9,10 +9,14 @@ from pathlib import Path
 
 from scripts.build_archives import build_package
 from scripts.compare_branches import compare_branches, write_comparison
-from scripts.inspect_package import run_qc, write_qc
+from scripts.derived_artifacts import write_derived_artifacts
+from scripts.inspect_package import classify_branch, run_qc, write_qc
 from scripts.manifest import ManifestStore, make_job_key
 from scripts.mol2 import Mol2ParseError, parse_mol2, sha256_file
+from scripts.qm_inputs import QMInputError
+from scripts.structure_files import StructureFileError
 from scripts.swissparam_client import SwissParamClient, SwissParamError, safe_extract_tar
+from scripts.upload import UploadError, resolve_uploader
 
 
 def utc_now() -> str:
@@ -74,10 +78,22 @@ def process_one(mol2_path: Path, *, client: SwissParamClient, manifest: Manifest
     comparison_tsv = workspace / "reports" / f"{molecule}_comparison.tsv"
     comparison_md = workspace / "reports" / f"{molecule}_comparison.md"
     write_comparison(comparison, comparison_tsv, comparison_md)
-    entry = {"molecule": molecule, "status": qc["status"], "session_number": session_number, "input_sha256": input_sha, "generator": "swissparam", "approach": approach, "updated_utc": utc_now(), "expected_charge": expected_charge if expected_charge is not None else "EXPECTED_CHARGE_UNKNOWN", "input_atom_count": len(input_data.atoms), "input_bond_count": len(input_data.bonds), "archive_sha256": sha256_file(archive), "issues": qc.get("issues", [])}
+    derived_dir = _write_derived(mol2_path, extracted_dir, raw_dir / "derived", charge=expected_charge if expected_charge is not None else 0)
+    qc_branches = qc.get("branches", {})
+    entry = {"molecule": molecule, "status": qc["status"], "session_number": session_number, "input_sha256": input_sha, "generator": "swissparam", "approach": approach, "updated_utc": utc_now(), "expected_charge": expected_charge if expected_charge is not None else "EXPECTED_CHARGE_UNKNOWN", "state": (state_row.get("state") if state_row else "") or "UNKNOWN", "match_available": "yes" if qc_branches.get("MATCH") else "no", "mmff_available": "yes" if qc_branches.get("MMFF") else "no", "input_atom_count": len(input_data.atoms), "input_bond_count": len(input_data.bonds), "archive_sha256": sha256_file(archive), "derived_artifacts": sorted(p.name for p in derived_dir.iterdir()) if derived_dir else [], "issues": qc.get("issues", [])}
     manifest.upsert(job_key, **entry)
-    package = build_package(molecule, original_mol2=mol2_path, raw_archive=archive, extracted_root=extracted_dir, comparison_tsv=comparison_tsv, comparison_md=comparison_md, qc_json=qc_json, issues_tsv=issues_tsv, manifest_entry=entry, packages_dir=workspace / "packages", staging_root=workspace / ".package_staging")
+    package = build_package(molecule, original_mol2=mol2_path, raw_archive=archive, extracted_root=extracted_dir, comparison_tsv=comparison_tsv, comparison_md=comparison_md, qc_json=qc_json, issues_tsv=issues_tsv, manifest_entry=entry, derived_dir=derived_dir, packages_dir=workspace / "packages", staging_root=workspace / ".package_staging")
     return {"molecule": molecule, "action": action, "package": str(package), **entry}
+
+
+def _write_derived(mol2_path: Path, extracted_dir: Path, out_dir: Path, *, charge: int) -> Path | None:
+    """Best-effort PDB + ORCA/CREST generation; never fails the whole molecule."""
+    topologies = [str(p) for p in sorted(extracted_dir.rglob("*")) if p.is_file() and p.suffix.lower() in {".rtf", ".str"} and classify_branch(p.relative_to(extracted_dir)) == "MATCH"]
+    try:
+        write_derived_artifacts(mol2_path, out_dir, charge=charge, topology_paths=topologies or None)
+    except (Mol2ParseError, StructureFileError, QMInputError, OSError):
+        return None
+    return out_dir
 
 
 def write_review_queue(results: list[dict], path: Path) -> None:
@@ -86,7 +102,7 @@ def write_review_queue(results: list[dict], path: Path) -> None:
     for result in results:
         if result.get("status") == "REVIEW":
             issue_codes = ",".join(issue.get("code", "") for issue in result.get("issues", []))
-            rows.append("\t".join([str(result.get("molecule", "")), str(result.get("state", "")), "REVIEW", issue_codes, "unknown", "unknown", "yes", "FFParam discovery required"]))
+            rows.append("\t".join([str(result.get("molecule", "")), str(result.get("state", "") or "UNKNOWN"), "REVIEW", issue_codes, str(result.get("match_available", "unknown")), str(result.get("mmff_available", "unknown")), "yes", "FFParam discovery required"]))
     path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
 
@@ -99,6 +115,7 @@ def main() -> int:
     p.add_argument("--poll-interval", type=float, default=15.0)
     p.add_argument("--max-total-wait", type=float, default=7200.0)
     p.add_argument("--force", action="store_true")
+    p.add_argument("--publish", help="Publish packages to a destination: local:<path> or rclone:<remote>")
     a = p.parse_args()
     workspace = Path.cwd()
     inputs = sorted(a.input_dir.glob("*.mol2"))
@@ -108,6 +125,7 @@ def main() -> int:
     states = load_states(a.states)
     manifest = ManifestStore.load(a.manifest)
     client = SwissParamClient()
+    uploader = resolve_uploader(a.publish)
     results = []
     for mol2_path in inputs:
         try:
@@ -117,6 +135,12 @@ def main() -> int:
             job_key = make_job_key(input_sha, approach=a.approach)
             manifest.upsert(job_key, molecule=mol2_path.stem, status="FAILED", review_reason=str(exc), updated_utc=utc_now())
             result = {"molecule": mol2_path.stem, "status": "FAILED", "action": "EXCEPTION", "review_reason": str(exc)}
+        if uploader is not None and result.get("package"):
+            try:
+                published = uploader.publish(result["molecule"], [Path(result["package"])])
+                result["published"] = [str(item) for item in published]
+            except (UploadError, OSError) as exc:
+                result["publish_error"] = str(exc)
         results.append(result)
         print(json.dumps(result, sort_keys=True))
     write_review_queue(results, workspace / "reports/review_queue.tsv")
