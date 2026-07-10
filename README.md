@@ -187,3 +187,5 @@ There is no schedule and no automatic GitHub Release publication.
 Tier 2 is only for `REVIEW` molecules.
 
 The project specification prefers `FFParam-v2`, but the authoritative `FFParam-v2` CLI has not yet been identified unambiguously. `scripts/second_level.py` therefore performs discovery and captures actual `--help` output when a candidate executable exists. It does not invent CLI flags.
+
+GAAMP remains a documented fallback and is not legacy-patched blindly.
