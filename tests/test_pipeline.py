@@ -78,6 +78,11 @@ def test_reject_malformed_mol2_without_atom_block() -> None:
         parse_mol2_text(VALID_MOL2.replace("@<TRIPOS>ATOM", "@<TRIPOS>ALT_ATOM"))
 
 
+def test_reject_bond_that_references_unknown_atom_id() -> None:
+    with pytest.raises(Mol2ParseError, match="references unknown atom ID"):
+        parse_mol2_text(VALID_MOL2.replace("2 2 3 1", "2 2 99 1"))
+
+
 def test_detect_pv_porphyrin_core_by_p_n4_o2_coordination() -> None:
     core = detect_pv_porphyrin_core(parse_mol2_text(PV_PORPHYRIN_MOL2))
     assert core is not None
